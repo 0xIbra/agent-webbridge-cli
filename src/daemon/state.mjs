@@ -3,12 +3,13 @@
 export const state = {
   ext: null,            // extension WebSocket (single)
   extInfo: null,        // { extensionVersion, runtimeId } from hello
+  extGeneration: 0,     // increments for every authenticated extension socket
   clients: new Set(),   // browser-level CDP clients (harness daemons)
-  pending: new Map(),   // request id -> { resolve, reject, timer }
+  pending: new Map(),   // request id -> { resolve, reject, timer, socket, generation }
   extWaiters: [],       // resolvers waiting for the extension to (re)connect
   sessions: new Map(),  // sessionId -> { tabId, client } (flatten attach sessions)
   tabTargets: new Map(),// tabId -> targetId
-  perTabQueues: new Map(), // tabId -> tail Promise (serialize CDP per tab)
+  perTabQueues: new Map(), // tabId -> { tail, depth } (serialize bounded CDP work)
   downloadPolicies: new Map(), // tabId -> { client, destination }
   downloadTransfers: new Map(), // guid -> { tabId, filename, client, destination }
   seq: 1,

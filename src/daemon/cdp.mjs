@@ -8,8 +8,13 @@ import { state, nextId } from "./state.mjs";
 import { extCmd, extDetach, extSetDownloadBehavior, extTabOp } from "./ext.mjs";
 import fs from "node:fs";
 import path from "node:path";
+import { registerBrowserClient, sendBrowserMessage, unregisterBrowserClient } from "./browser-ws.mjs";
 
 const DOWNLOAD_ROOT = process.env.OB_DOWNLOAD_ROOT ? path.resolve(process.env.OB_DOWNLOAD_ROOT) : null;
+export const MAX_TAB_QUEUE_DEPTH = 64;
+export const MAX_BROWSER_CLIENTS = 32;
+export const MAX_CLIENT_INFLIGHT = 64;
+const browserInflight = new WeakMap();
 
 function safeDownloadDestination(requested) {
   const destination = path.resolve(String(requested || ""));
@@ -17,11 +22,21 @@ function safeDownloadDestination(requested) {
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error("download path is outside the configured root");
   }
-  fs.mkdirSync(destination, { recursive: true, mode: 0o700 });
+  const rootInfo = fs.lstatSync(DOWNLOAD_ROOT);
+  if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
+    throw new Error("download path contains an unsafe filesystem component");
+  }
   let current = DOWNLOAD_ROOT;
   for (const part of relative.split(path.sep).filter(Boolean)) {
     current = path.join(current, part);
-    const info = fs.lstatSync(current);
+    let info;
+    try {
+      info = fs.lstatSync(current);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      fs.mkdirSync(current, { mode: 0o700 });
+      info = fs.lstatSync(current);
+    }
     if (info.isSymbolicLink() || !info.isDirectory()) {
       throw new Error("download path contains an unsafe filesystem component");
     }
@@ -119,9 +134,21 @@ async function routeBrowserLevel(method, params, client) {
 // Serialize session-scoped CDP commands per tab so concurrent sessions on the
 // same tab never interleave commands (chrome.debugger is per-tab flat).
 function enqueuePerTab(tabId, fn) {
-  const prev = state.perTabQueues.get(tabId) || Promise.resolve();
-  const run = prev.then(fn, fn);
-  state.perTabQueues.set(tabId, run.catch(() => {}));
+  let queue = state.perTabQueues.get(tabId);
+  if (!queue) {
+    queue = { tail: Promise.resolve(), depth: 0 };
+    state.perTabQueues.set(tabId, queue);
+  }
+  if (queue.depth >= MAX_TAB_QUEUE_DEPTH) throw new Error("tab command queue is full");
+  queue.depth++;
+  const run = queue.tail.then(fn, fn);
+  queue.tail = run.catch(() => {});
+  void queue.tail.then(() => {
+    queue.depth--;
+    if (queue.depth === 0 && state.perTabQueues.get(tabId) === queue) {
+      state.perTabQueues.delete(tabId);
+    }
+  });
   return run;
 }
 
@@ -145,10 +172,17 @@ export async function route(m, client) {
     void extSetDownloadBehavior(session.tabId, behavior).catch(() => {});
     return {};
   }
-  return enqueuePerTab(session.tabId, () => extCmd(session.tabId, m.method, m.params || {}));
+  return enqueuePerTab(session.tabId, () => {
+    if (!state.clients.has(client) || state.sessions.get(m.sessionId) !== session) {
+      throw new Error("browser session revoked");
+    }
+    return extCmd(session.tabId, m.method, m.params || {});
+  });
 }
 
 async function cleanupClient(client) {
+  unregisterBrowserClient(client);
+  browserInflight.delete(client);
   state.clients.delete(client);
   const tabs = new Set();
   for (const [sid, session] of state.sessions) {
@@ -166,16 +200,34 @@ async function cleanupClient(client) {
 }
 
 export function handleBrowser(ws) {
+  if (state.clients.size >= MAX_BROWSER_CLIENTS) {
+    try { ws.close(1013, "too many browser clients"); } catch {}
+    return;
+  }
   state.clients.add(ws);
+  registerBrowserClient(ws, () => { void cleanupClient(ws); });
   ws.on("message", async (data) => {
+    if (!state.clients.has(ws)) return;
     let m;
     try { m = JSON.parse(data); } catch { return; }
     if (m.id === undefined) return; // client events/acks — ignore
+    const inflight = browserInflight.get(ws) || 0;
+    if (inflight >= MAX_CLIENT_INFLIGHT) {
+      sendBrowserMessage(ws, { id: m.id, error: { code: -32000, message: "too many in-flight browser commands" } });
+      return;
+    }
+    browserInflight.set(ws, inflight + 1);
     try {
       const result = await route(m, ws);
-      ws.send(JSON.stringify({ id: m.id, result }));
+      if (!state.clients.has(ws)) return;
+      sendBrowserMessage(ws, { id: m.id, result });
     } catch (e) {
-      ws.send(JSON.stringify({ id: m.id, error: { code: -32000, message: String((e && e.message) || e) } }));
+      if (!state.clients.has(ws)) return;
+      sendBrowserMessage(ws, { id: m.id, error: { code: -32000, message: String((e && e.message) || e) } });
+    } finally {
+      const remaining = (browserInflight.get(ws) || 1) - 1;
+      if (remaining > 0) browserInflight.set(ws, remaining);
+      else browserInflight.delete(ws);
     }
   });
   ws.on("close", () => { void cleanupClient(ws); });

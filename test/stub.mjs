@@ -11,6 +11,7 @@ const ws = new WebSocket(
   process.env.STUB_EXT_ORIGIN ? { origin: process.env.STUB_EXT_ORIGIN } : {},
 );
 let tabSeq = 1;
+let cancelAttempts = 0;
 const tabs = [{ id: 1, title: "Stub tab", url: "https://example.com/", active: true, windowId: 1 }];
 const PAGE = { url: "https://example.com/", title: "Stub tab", w: 1280, h: 800, sx: 0, sy: 0, pw: 1280, ph: 2400 };
 
@@ -47,8 +48,62 @@ ws.on("message", (d) => {
   }
   if (m.type === "cmd") {
     const ex = (m.params && m.params.expression) || "";
+    if (m.method === "Browser.cancelDownload") {
+      cancelAttempts++;
+      if (process.env.STUB_CANCEL_ATTEMPT_FILE) {
+        fs.appendFileSync(process.env.STUB_CANCEL_ATTEMPT_FILE, `${m.params.guid}\n`);
+      }
+      if (cancelAttempts <= Number(process.env.STUB_CANCEL_FAILS || 0)) {
+        return ws.send(JSON.stringify({ type: "res", id: m.id, error: { code: -32000, message: "simulated cancellation failure" } }));
+      }
+      if (process.env.STUB_CANCEL_FILE) fs.appendFileSync(process.env.STUB_CANCEL_FILE, `${m.params.guid}\n`);
+      return ws.send(JSON.stringify({ type: "res", id: m.id, result: {} }));
+    }
     if (m.method === "Runtime.evaluate") {
       ws.send(JSON.stringify({ type: "evt", tabId: m.tabId, method: "Runtime.consoleAPICalled", params: { type: "log" } }));
+
+      if (ex === "__triggerOversizedDownload") {
+        const source = process.env.STUB_OVERSIZE_SOURCE;
+        const guid = process.env.STUB_OVERSIZE_GUID || "fixture-oversize-guid";
+        if (source) {
+          const writeSource = () => {
+            fs.mkdirSync(path.dirname(source), { recursive: true });
+            fs.writeFileSync(source, "partial oversized download\n");
+          };
+          const delay = Number(process.env.STUB_OVERSIZE_SOURCE_DELAY_MS || 0);
+          if (delay > 0) setTimeout(writeSource, delay);
+          else writeSource();
+        }
+        ws.send(JSON.stringify({ type: "evt", tabId: m.tabId, method: "Page.downloadWillBegin", params: { guid, suggestedFilename: "oversized.bin", url: "http://fixture.invalid/oversized.bin" } }));
+        ws.send(JSON.stringify({ type: "evt", tabId: m.tabId, method: "Page.downloadProgress", params: { guid, receivedBytes: 256 * 1024 * 1024 + 1, totalBytes: 512 * 1024 * 1024, state: "inProgress" } }));
+        ws.send(JSON.stringify({ type: "evt", tabId: m.tabId, method: "Page.downloadProgress", params: { guid, receivedBytes: 256 * 1024 * 1024 + 2, totalBytes: 512 * 1024 * 1024, state: "inProgress" } }));
+        return ws.send(JSON.stringify({ type: "res", id: m.id, result: { result: { type: "undefined" } } }));
+      }
+
+      if (ex === "__triggerCancelledDownload") {
+        const source = process.env.STUB_CANCELLED_SOURCE;
+        const guid = process.env.STUB_CANCELLED_GUID || "fixture-cancelled-guid";
+        if (source) {
+          fs.mkdirSync(path.dirname(source), { recursive: true });
+          fs.writeFileSync(source, "partial cancelled download\n");
+        }
+        ws.send(JSON.stringify({ type: "evt", tabId: m.tabId, method: "Page.downloadWillBegin", params: { guid, suggestedFilename: "cancelled.bin", url: "http://fixture.invalid/cancelled.bin" } }));
+        ws.send(JSON.stringify({ type: "evt", tabId: m.tabId, method: "Page.downloadProgress", params: { guid, receivedBytes: 12, totalBytes: 24, state: "canceled" } }));
+        return ws.send(JSON.stringify({ type: "res", id: m.id, result: { result: { type: "undefined" } } }));
+      }
+
+      if (ex === "__triggerOversizedCompletedDownload") {
+        const source = process.env.STUB_COMPLETED_OVERSIZE_SOURCE;
+        const guid = process.env.STUB_COMPLETED_OVERSIZE_GUID || "fixture-completed-oversize-guid";
+        if (source) {
+          fs.mkdirSync(path.dirname(source), { recursive: true });
+          fs.writeFileSync(source, "oversized");
+          fs.truncateSync(source, 256 * 1024 * 1024 + 1);
+        }
+        ws.send(JSON.stringify({ type: "evt", tabId: m.tabId, method: "Page.downloadWillBegin", params: { guid, suggestedFilename: "completed-oversized.bin", url: "http://fixture.invalid/completed-oversized.bin" } }));
+        ws.send(JSON.stringify({ type: "evt", tabId: m.tabId, method: "Page.downloadProgress", params: { guid, receivedBytes: 12, totalBytes: 12, state: "completed" } }));
+        return ws.send(JSON.stringify({ type: "res", id: m.id, result: { result: { type: "undefined" } } }));
+      }
 
       if (ex.includes("JSON.stringify({url:location.href")) return ws.send(JSON.stringify({ type: "res", id: m.id, result: { result: { type: "string", value: JSON.stringify(PAGE) } } }));
       if (/1\+1|1 \+ 1/.test(ex)) return ws.send(JSON.stringify({ type: "res", id: m.id, result: { result: { type: "number", value: 2 } } }));

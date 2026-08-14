@@ -65,6 +65,9 @@ daemon -> ext: {type:"cmd", id, tabId, method, params}
 
 - `hello` carries chrome.runtime.id. If `OB_EXT_ID` is set and mismatches,
   the socket is closed (identity pinning).
+- `res`, `evt`, and `ping` frames are inert until that exact socket has passed
+  `hello` and remains the active `state.ext`; pre-auth and superseded sockets
+  cannot settle daemon requests or publish events.
 - The unpacked extension carries a stable public manifest key. Its derived
   Chrome extension ID is pinned in `extension/id.txt`; packaging and production
   launch must reject a derived-ID mismatch.
@@ -83,16 +86,27 @@ daemon -> ext: {type:"cmd", id, tabId, method, params}
 - Browser-level Target.* commands run directly (tabops are atomic).
 - `Page.setDownloadBehavior` and `Browser.setDownloadBehavior` are emulated
   because `chrome.debugger` rejects that behavior. The daemon accepts only
-  `behavior: "allow"`, rejects symlink path components, confines the destination
-  beneath `OB_DOWNLOAD_ROOT`, and copies extension-observed completed downloads
-  with no-follow/exclusive file creation. The embedding
+  `behavior: "allow"`, validates and creates destination directories one
+  component at a time without following symlink parents or mutating outside the
+  root, confines the destination beneath `OB_DOWNLOAD_ROOT`, and copies
+  extension-observed completed downloads with no-follow/exclusive file creation.
+  The embedding
   browser runtime must launch Chromium with automatic downloads accepted and
   a worker-owned download directory beneath the same filesystem boundary.
   Clicks remain native trusted browser input; the extension reports completed
   downloads through `Page.downloadWillBegin` and `Page.downloadProgress`; the
   daemon resolves the browser-issued GUID beneath `OB_DOWNLOAD_ROOT` and copies
-  it under the suggested filename. With no configured root, the CDP operation
-  fails closed.
+  it under the suggested filename. Progress above 256 MiB by either total or
+  received bytes is cancelled immediately through `Browser.cancelDownload`,
+  deduplicated, and its GUID staging file is removed when supported. Completed,
+  cancelled, interrupted, disconnected, and completion-time oversized transfers
+  remove their private staging files. Transfer tracking is capped at 256 and
+  concurrent oversized-abort jobs at 32; overflow revokes the extension rather
+  than creating unbounded state. With no configured root, the CDP operation fails
+  closed.
+- Browser-client responses and events have a 1 MiB cumulative WebSocket send
+  budget. A frame that would exceed it closes the slow consumer instead of
+  growing the transport queue.
 - Attach happens lazily on the first command to a tab. Flatten sessions are
   owned by the Browser Harness WebSocket that created them. Closing that socket
   deletes its sessions and sends `detach` for each tab no remaining client uses;
