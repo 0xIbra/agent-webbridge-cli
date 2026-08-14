@@ -12,6 +12,7 @@
     "extension/",
     "scripts/",
     "test/",
+    "skills/",
     "README.md",
     "AGENTS.md",
     "BUILD_SPEC.md",
