@@ -31,7 +31,11 @@ function readPortFromArg(argv) {
 
 async function getStatus(port = 9377) {
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/status`, { signal: AbortSignal.timeout(1500) });
+    const token = process.env.OB_CONTROL_TOKEN || "";
+    const res = await fetch(`http://127.0.0.1:${port}/status`, {
+      signal: AbortSignal.timeout(1500),
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
     if (!res.ok) return null;
     return await res.json();
   } catch { return null; }

@@ -3,8 +3,13 @@
 // browser-harness helper surface (page_info expression, 1+1, DPR, navigate).
 
 import { WebSocket } from "ws";
+import fs from "node:fs";
+import path from "node:path";
 
-const ws = new WebSocket(`ws://127.0.0.1:${process.env.STUB_EXT_PORT || 9377}/ext`);
+const ws = new WebSocket(
+  `ws://127.0.0.1:${process.env.STUB_EXT_PORT || 9377}/ext`,
+  process.env.STUB_EXT_ORIGIN ? { origin: process.env.STUB_EXT_ORIGIN } : {},
+);
 let tabSeq = 1;
 const tabs = [{ id: 1, title: "Stub tab", url: "https://example.com/", active: true, windowId: 1 }];
 const PAGE = { url: "https://example.com/", title: "Stub tab", w: 1280, h: 800, sx: 0, sy: 0, pw: 1280, ph: 2400 };
@@ -36,16 +41,37 @@ ws.on("message", (d) => {
     if (m.op === "activate") return ws.send(JSON.stringify({ type: "res", id: m.id, result: {} }));
     return ws.send(JSON.stringify({ type: "res", id: m.id, result: {} }));
   }
+  if (m.type === "setDownloadBehavior") {
+    ws.send(JSON.stringify({ type: "res", id: m.id, result: {} }));
+    return;
+  }
   if (m.type === "cmd") {
     const ex = (m.params && m.params.expression) || "";
     if (m.method === "Runtime.evaluate") {
+      ws.send(JSON.stringify({ type: "evt", tabId: m.tabId, method: "Runtime.consoleAPICalled", params: { type: "log" } }));
+
       if (ex.includes("JSON.stringify({url:location.href")) return ws.send(JSON.stringify({ type: "res", id: m.id, result: { result: { type: "string", value: JSON.stringify(PAGE) } } }));
       if (/1\+1|1 \+ 1/.test(ex)) return ws.send(JSON.stringify({ type: "res", id: m.id, result: { result: { type: "number", value: 2 } } }));
       if (ex.includes("devicePixelRatio")) return ws.send(JSON.stringify({ type: "res", id: m.id, result: { result: { type: "number", value: 1 } } }));
       return ws.send(JSON.stringify({ type: "res", id: m.id, result: { result: { type: "undefined" } } }));
     }
+    if (m.method === "Input.dispatchMouseEvent" && process.env.STUB_INPUT_FILE) {
+      fs.appendFileSync(process.env.STUB_INPUT_FILE, `${m.params.type}\n`);
+      const source = process.env.STUB_DOWNLOAD_SOURCE;
+      if (m.params.type === "mouseReleased" && source) {
+        fs.mkdirSync(path.dirname(source), { recursive: true });
+        fs.writeFileSync(source, "agent-webbridge-download\n");
+        const guid = process.env.STUB_DOWNLOAD_GUID || "fixture-download-guid";
+        ws.send(JSON.stringify({ type: "evt", tabId: m.tabId, method: "Page.downloadWillBegin", params: { guid, suggestedFilename: "fixture-download.txt", url: "http://fixture.invalid/download.txt" } }));
+        ws.send(JSON.stringify({ type: "evt", tabId: m.tabId, method: "Page.downloadProgress", params: { guid, receivedBytes: 25, totalBytes: 25, state: "completed" } }));
+      }
+    }
     if (m.method === "Page.navigate") return ws.send(JSON.stringify({ type: "res", id: m.id, result: { frameId: "f1", loaderId: "l1" } }));
     if (m.method === "Page.captureScreenshot") return ws.send(JSON.stringify({ type: "res", id: m.id, result: { data: "" } }));
+    return ws.send(JSON.stringify({ type: "res", id: m.id, result: {} }));
+  }
+  if (m.type === "detach") {
+    if (process.env.STUB_DETACH_FILE) fs.appendFileSync(process.env.STUB_DETACH_FILE, `${m.tabId}\n`);
     return ws.send(JSON.stringify({ type: "res", id: m.id, result: {} }));
   }
 });

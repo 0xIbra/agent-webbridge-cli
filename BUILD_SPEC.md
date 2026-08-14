@@ -7,7 +7,7 @@ the change is wrong or this file needs an explicit amendment.
 
 ```
 browser-harness (Browser Use CLI 3.0)     the agent's script runner
-        │  BU_CDP_WS=ws://127.0.0.1:9377/devtools/browser/awb
+        │  BU_CDP_WS=ws://127.0.0.1:9377/devtools/browser/awb[?token=capability]
         ▼
 daemon (src/daemon, Node, one dep: ws)    CDP emulation + session routing
         │  WS /ext  (ext <- daemon)
@@ -46,7 +46,9 @@ Session-scoped (routed per tab to chrome.debugger):
 - Input.* (dispatchMouseEvent — trusted clicks, dispatchKeyEvent, insertText)
 - Network.* (enable + events: requestWillBeSent, loadingFinished, loadingFailed)
 
-Events are fanned out with the sessionId of every session bound to the tab.
+Events are fanned out with the sessionId of every session bound to the tab, but
+only to the Browser Harness WebSocket that owns that session. A client cannot
+issue commands with another client's sessionId.
 
 ## 3. Extension <-> daemon protocol
 
@@ -58,10 +60,14 @@ ext -> daemon: {type:"hello", extensionVersion, runtimeId}
 daemon -> ext: {type:"cmd", id, tabId, method, params}
                {type:"tabop", id, op, params}         // create|remove|activate|list|get
                {type:"detach", tabId}
+               {type:"setDownloadBehavior", id, tabId, behavior}
 ```
 
 - `hello` carries chrome.runtime.id. If `OB_EXT_ID` is set and mismatches,
   the socket is closed (identity pinning).
+- The unpacked extension carries a stable public manifest key. Its derived
+  Chrome extension ID is pinned in `extension/id.txt`; packaging and production
+  launch must reject a derived-ID mismatch.
 - Request ids are daemon-issued, monotonically increasing.
 - The daemon waits up to 30s for the extension to (re)connect before failing
   a command with "extension not connected".
@@ -75,9 +81,25 @@ daemon -> ext: {type:"cmd", id, tabId, method, params}
   because chrome.debugger is per-tab flat and different sessions may be bound
   to the same tab (switch_tab creates a new session while the old one lives).
 - Browser-level Target.* commands run directly (tabops are atomic).
-- Attach happens lazily on the first command to a tab; detach only via
-  Target.closeTarget or explicit `detach` message. The extension prunes its
-  attach map on chrome.debugger.onDetach and chrome.tabs.onRemoved.
+- `Page.setDownloadBehavior` and `Browser.setDownloadBehavior` are emulated
+  because `chrome.debugger` rejects that behavior. The daemon accepts only
+  `behavior: "allow"`, rejects symlink path components, confines the destination
+  beneath `OB_DOWNLOAD_ROOT`, and copies extension-observed completed downloads
+  with no-follow/exclusive file creation. The embedding
+  browser runtime must launch Chromium with automatic downloads accepted and
+  a worker-owned download directory beneath the same filesystem boundary.
+  Clicks remain native trusted browser input; the extension reports completed
+  downloads through `Page.downloadWillBegin` and `Page.downloadProgress`; the
+  daemon resolves the browser-issued GUID beneath `OB_DOWNLOAD_ROOT` and copies
+  it under the suggested filename. With no configured root, the CDP operation
+  fails closed.
+- Attach happens lazily on the first command to a tab. Flatten sessions are
+  owned by the Browser Harness WebSocket that created them. Closing that socket
+  deletes its sessions and sends `detach` for each tab no remaining client uses;
+  this is the secure human-takeover boundary. `Target.detachFromTarget` does the
+  same for one session. The extension acknowledges `detach` only after calling
+  `chrome.debugger.detach`, and prunes its attach map on
+  chrome.debugger.onDetach and chrome.tabs.onRemoved.
 
 ## 5. MV3 service-worker keepalive (do not regress this)
 
@@ -100,11 +122,23 @@ instantly.
   only permits ws:// on localhost by default (any ws:// URL is technically
   settable — that is the user's explicit choice, mirroring Kimi's dev-mode).
 - OB_EXT_ID pins the daemon to one extension runtimeId.
+- When `OB_EXT_ID` is set, `/ext` accepts only the matching
+  `chrome-extension://<id>` WebSocket Origin before the runtime hello check.
+- Optional `OB_CONTROL_TOKEN` enables hosted mode: daemon HTTP discovery/status
+  requires a Bearer token and the Browser Harness WebSocket requires the same
+  opaque token in its query capability. Normal owner-local mode remains
+  backward-compatible when the variable is absent. The token must never appear
+  in status payloads or product-client output.
+- OB_DOWNLOAD_ROOT bounds every Browser Harness-requested download directory;
+  cross-root paths, symlink components, existing destination files, oversized
+  transfers, and cross-client policy replacement are rejected.
 - No telemetry, no accounts, no outbound network calls from the daemon.
 
 ## 7. Testing policy
 
 - `npm test` (test/contract.mjs) is browser-free: real daemon + stub extension.
+  It covers per-client session/event isolation and debugger detach on harness
+  disconnect in addition to the Browser Harness command surface.
 - Protocol or emulation changes MUST add or update a contract case.
 - Live verification (real extension + real Chrome + real browser-harness) is
   the only proof of chrome.debugger fidelity; it is a manual run, not CI.

@@ -5,7 +5,35 @@
 // actually calls — see BUILD_SPEC.md §2 for the enumerated contract.
 
 import { state, nextId } from "./state.mjs";
-import { extCmd, extTabOp } from "./ext.mjs";
+import { extCmd, extDetach, extSetDownloadBehavior, extTabOp } from "./ext.mjs";
+import fs from "node:fs";
+import path from "node:path";
+
+const DOWNLOAD_ROOT = process.env.OB_DOWNLOAD_ROOT ? path.resolve(process.env.OB_DOWNLOAD_ROOT) : null;
+
+function safeDownloadDestination(requested) {
+  const destination = path.resolve(String(requested || ""));
+  const relative = path.relative(DOWNLOAD_ROOT, destination);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("download path is outside the configured root");
+  }
+  fs.mkdirSync(destination, { recursive: true, mode: 0o700 });
+  let current = DOWNLOAD_ROOT;
+  for (const part of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, part);
+    const info = fs.lstatSync(current);
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw new Error("download path contains an unsafe filesystem component");
+    }
+  }
+  const rootReal = fs.realpathSync(DOWNLOAD_ROOT);
+  const destinationReal = fs.realpathSync(destination);
+  const realRelative = path.relative(rootReal, destinationReal);
+  if (realRelative.startsWith("..") || path.isAbsolute(realRelative)) {
+    throw new Error("download path is outside the configured root");
+  }
+  return destinationReal;
+}
 
 function targetIdFor(tabId) {
   let tid = state.tabTargets.get(tabId);
@@ -28,7 +56,14 @@ async function listTargetInfos() {
   return tabs.map(targetInfo);
 }
 
-async function routeBrowserLevel(method, params) {
+async function detachIfUnused(tabId) {
+  for (const session of state.sessions.values()) {
+    if (session.tabId === tabId) return;
+  }
+  await extDetach(tabId);
+}
+
+async function routeBrowserLevel(method, params, client) {
   switch (method) {
     case "Target.getTargets":
       return { targetInfos: await listTargetInfos() };
@@ -46,7 +81,7 @@ async function routeBrowserLevel(method, params) {
       const tabId = Number(String(params.targetId).replace(/^awb-/, ""));
       if (!tabId) throw new Error("attachToTarget: bad targetId " + params.targetId);
       const sessionId = "awbs" + nextId();
-      state.sessions.set(sessionId, tabId);
+      state.sessions.set(sessionId, { tabId, client });
       return { sessionId };
     }
     case "Target.activateTarget": {
@@ -57,12 +92,17 @@ async function routeBrowserLevel(method, params) {
     case "Target.closeTarget": {
       const tabId = Number(String(params.targetId).replace(/^awb-/, ""));
       await extTabOp("remove", { tabId });
-      for (const [sid, t] of state.sessions) if (t === tabId) state.sessions.delete(sid);
+      for (const [sid, session] of state.sessions) if (session.tabId === tabId) state.sessions.delete(sid);
+      state.downloadPolicies.delete(tabId);
       state.tabTargets.delete(tabId);
       return { success: true };
     }
     case "Target.detachFromTarget": {
-      state.sessions.delete(params.sessionId);
+      const session = state.sessions.get(params.sessionId);
+      if (session && session.client === client) {
+        state.sessions.delete(params.sessionId);
+        await detachIfUnused(session.tabId);
+      }
       return {};
     }
     // Auto-attach / discovery — not meaningful over chrome.debugger; ack quietly.
@@ -85,14 +125,44 @@ function enqueuePerTab(tabId, fn) {
   return run;
 }
 
-export async function route(m) {
+export async function route(m, client) {
   if (m.method.startsWith("Target.") && !m.sessionId) {
-    return routeBrowserLevel(m.method, m.params || {});
+    return routeBrowserLevel(m.method, m.params || {}, client);
   }
   if (!m.sessionId) throw new Error("no sessionId and " + m.method + " is not browser-level");
-  const tabId = state.sessions.get(m.sessionId);
-  if (tabId === undefined) throw new Error("unknown sessionId " + m.sessionId);
-  return enqueuePerTab(tabId, () => extCmd(tabId, m.method, m.params || {}));
+  const session = state.sessions.get(m.sessionId);
+  if (!session || session.client !== client) throw new Error("unknown sessionId " + m.sessionId);
+  if (m.method === "Page.setDownloadBehavior" || m.method === "Browser.setDownloadBehavior") {
+    if (!DOWNLOAD_ROOT) throw new Error("download behavior is unavailable");
+    const behavior = m.params && m.params.behavior;
+    if (behavior !== "allow") {
+      throw new Error("download path is outside the configured root");
+    }
+    const destination = safeDownloadDestination(m.params && m.params.downloadPath);
+    const current = state.downloadPolicies.get(session.tabId);
+    if (current && current.client !== client) throw new Error("download policy is owned by another client");
+    state.downloadPolicies.set(session.tabId, { client, destination });
+    void extSetDownloadBehavior(session.tabId, behavior).catch(() => {});
+    return {};
+  }
+  return enqueuePerTab(session.tabId, () => extCmd(session.tabId, m.method, m.params || {}));
+}
+
+async function cleanupClient(client) {
+  state.clients.delete(client);
+  const tabs = new Set();
+  for (const [sid, session] of state.sessions) {
+    if (session.client !== client) continue;
+    state.sessions.delete(sid);
+    tabs.add(session.tabId);
+  }
+  for (const [tabId, policy] of state.downloadPolicies) {
+    if (policy.client === client) state.downloadPolicies.delete(tabId);
+  }
+  for (const [guid, transfer] of state.downloadTransfers) {
+    if (transfer.client === client) state.downloadTransfers.delete(guid);
+  }
+  await Promise.all([...tabs].map((tabId) => detachIfUnused(tabId)));
 }
 
 export function handleBrowser(ws) {
@@ -102,12 +172,12 @@ export function handleBrowser(ws) {
     try { m = JSON.parse(data); } catch { return; }
     if (m.id === undefined) return; // client events/acks — ignore
     try {
-      const result = await route(m);
+      const result = await route(m, ws);
       ws.send(JSON.stringify({ id: m.id, result }));
     } catch (e) {
       ws.send(JSON.stringify({ id: m.id, error: { code: -32000, message: String((e && e.message) || e) } }));
     }
   });
-  ws.on("close", () => state.clients.delete(ws));
+  ws.on("close", () => { void cleanupClient(ws); });
   ws.on("error", () => {});
 }

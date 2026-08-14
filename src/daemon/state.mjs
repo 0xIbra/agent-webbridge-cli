@@ -6,9 +6,11 @@ export const state = {
   clients: new Set(),   // browser-level CDP clients (harness daemons)
   pending: new Map(),   // request id -> { resolve, reject, timer }
   extWaiters: [],       // resolvers waiting for the extension to (re)connect
-  sessions: new Map(),  // sessionId -> tabId (flatten attach sessions)
+  sessions: new Map(),  // sessionId -> { tabId, client } (flatten attach sessions)
   tabTargets: new Map(),// tabId -> targetId
   perTabQueues: new Map(), // tabId -> tail Promise (serialize CDP per tab)
+  downloadPolicies: new Map(), // tabId -> { client, destination }
+  downloadTransfers: new Map(), // guid -> { tabId, filename, client, destination }
   seq: 1,
 };
 

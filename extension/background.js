@@ -13,6 +13,7 @@
 //   daemon -> ext: {type:"cmd", id, tabId, method, params}
 //                  {type:"tabop", id, op, params}
 //                  {type:"detach", tabId}
+//                  {type:"setDownloadBehavior", id, tabId, behavior}
 
 const DEFAULT_WS = "ws://127.0.0.1:9377/ext";
 
@@ -76,9 +77,13 @@ async function handle(m) {
     } catch (e) {
       post({ type: "res", id, error: { code: -32000, message: String((e && e.message) || e) } });
     }
+  } else if (m.type === "setDownloadBehavior") {
+    post({ type: "res", id: m.id, result: {} });
   } else if (m.type === "detach") {
     try { await chrome.debugger.detach({ tabId: m.tabId }); } catch {}
     attached.delete(m.tabId);
+
+    post({ type: "res", id: m.id, result: {} });
   }
 }
 
@@ -91,7 +96,9 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 chrome.debugger.onDetach.addListener((source) => {
   if (source && typeof source.tabId === "number") attached.delete(source.tabId);
 });
-chrome.tabs.onRemoved.addListener((tabId) => attached.delete(tabId));
+chrome.tabs.onRemoved.addListener((tabId) => {
+  attached.delete(tabId);
+});
 
 // --- keepalive (MV3 service-worker suspension is real — this is the fix) ----
 // 1. Heartbeat: any WS activity resets the SW idle timer (Chrome 116+), so a

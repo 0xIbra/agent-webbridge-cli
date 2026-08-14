@@ -11,18 +11,41 @@ import { handleBrowser } from "./cdp.mjs";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { timingSafeEqual } from "node:crypto";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PKG = JSON.parse(readFileSync(join(HERE, "..", "..", "package.json"), "utf8"));
 
 const PORT = Number(process.env.OB_PORT || 9377);
 const HOST = "127.0.0.1";
+const CONTROL_TOKEN = process.env.OB_CONTROL_TOKEN || "";
+const EXTENSION_ORIGIN = process.env.OB_EXT_ID ? `chrome-extension://${process.env.OB_EXT_ID}` : "";
+
+function secretMatches(actual, expected) {
+  if (!actual || !expected) return false;
+  const left = Buffer.from(actual);
+  const right = Buffer.from(expected);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function httpAuthorized(req) {
+  if (!CONTROL_TOKEN) return true;
+  const prefix = "Bearer ";
+  const authorization = req.headers.authorization || "";
+  return authorization.startsWith(prefix) && secretMatches(authorization.slice(prefix.length), CONTROL_TOKEN);
+}
+
+function rejectUpgrade(socket) {
+  socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+  socket.destroy();
+}
 
 const server = http.createServer((req, res) => {
   const send = (code, obj) => {
-    res.writeHead(code, { "Content-Type": "application/json" });
+    res.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     res.end(JSON.stringify(obj));
   };
+  if (!httpAuthorized(req)) return send(401, { error: "unauthorized" });
   if (req.url === "/json/version") {
     return send(200, {
       "Browser": "Chrome/AWB-CLI",
@@ -56,8 +79,14 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ noServer: true });
 server.on("upgrade", (req, socket, head) => {
   const u = new URL(req.url, `http://${HOST}`);
-  if (u.pathname === "/ext") return wss.handleUpgrade(req, socket, head, (ws) => handleExt(ws));
-  if (u.pathname.startsWith("/devtools/browser/")) return wss.handleUpgrade(req, socket, head, (ws) => handleBrowser(ws));
+  if (u.pathname === "/ext") {
+    if (EXTENSION_ORIGIN && req.headers.origin !== EXTENSION_ORIGIN) return rejectUpgrade(socket);
+    return wss.handleUpgrade(req, socket, head, (ws) => handleExt(ws));
+  }
+  if (u.pathname.startsWith("/devtools/browser/")) {
+    if (CONTROL_TOKEN && !secretMatches(u.searchParams.get("token"), CONTROL_TOKEN)) return rejectUpgrade(socket);
+    return wss.handleUpgrade(req, socket, head, (ws) => handleBrowser(ws));
+  }
   socket.destroy();
 });
 
