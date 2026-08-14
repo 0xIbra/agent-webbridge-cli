@@ -1,0 +1,41 @@
+{
+  "name": "agent-webbridge-cli",
+  "version": "0.2.0",
+  "description": "Browser Use CLI 3.0 for your real Chrome: a clean-room local CDP relay (MV3 extension + daemon) that lets the script-based browser harness drive your actual browser sessions — 48-66% fewer tokens than per-click browser tools.",
+  "type": "module",
+  "bin": {
+    "awb-cli": "bin/awb-cli.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "extension/",
+    "scripts/",
+    "test/",
+    "README.md",
+    "AGENTS.md",
+    "BUILD_SPEC.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node test/contract.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.21.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "author": "0xIbra <ibragim.ai95@gmail.com>",
+  "keywords": [
+    "browser-harness",
+    "browser-use",
+    "cdp",
+    "chrome-devtools-protocol",
+    "chrome-extension",
+    "ai-agent",
+    "web-automation",
+    "real-browser"
+  ]
+}
