@@ -1,0 +1,94 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Agent WebBridge CLI</title>
+  <style>
+    :root {
+      --bg: #0b0e13;
+      --card: #12161f;
+      --border: rgba(255, 255, 255, 0.08);
+      --text: #e8ecf3;
+      --muted: #8b93a5;
+      --accent: #10b981;
+      --accent-soft: rgba(16, 185, 129, 0.12);
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", sans-serif;
+      width: 320px; margin: 0; padding: 16px;
+      background: var(--bg); color: var(--text); font-size: 13px;
+    }
+    .head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+    .mark {
+      width: 30px; height: 30px; border-radius: 9px; flex-shrink: 0;
+      background: linear-gradient(135deg, #10b981, #0d9488);
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 800; font-size: 14px; color: #04120c; letter-spacing: -0.5px;
+    }
+    .title { font-size: 13.5px; font-weight: 700; letter-spacing: -0.2px; }
+    .sub { font-size: 11px; color: var(--muted); margin-top: 1px; }
+    .badge {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 5px 11px; border-radius: 999px; font-size: 11.5px; font-weight: 600;
+      background: var(--card); border: 1px solid var(--border); color: var(--muted);
+      margin-bottom: 14px; transition: all .2s ease;
+    }
+    .badge .dot { width: 7px; height: 7px; border-radius: 50%; background: #4b5563; }
+    .badge.up { background: var(--accent-soft); border-color: rgba(16, 185, 129, 0.35); color: #34d399; }
+    .badge.up .dot { background: var(--accent); animation: pulse 2s infinite; }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.45); }
+      70% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+    }
+    label { display: block; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin-bottom: 6px; }
+    input {
+      width: 100%; padding: 9px 11px; border-radius: 10px;
+      border: 1px solid var(--border); background: var(--card); color: var(--text);
+      font-size: 12px; margin-bottom: 10px; outline: none; transition: border-color .15s ease;
+    }
+    input:focus { border-color: rgba(16, 185, 129, 0.5); }
+    button {
+      width: 100%; padding: 9px; border: none; border-radius: 10px;
+      background: linear-gradient(135deg, #10b981, #0d9488); color: #04120c;
+      font-size: 12px; font-weight: 700; cursor: pointer; transition: opacity .15s ease;
+    }
+    button:hover { opacity: 0.92; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .hint {
+      font-size: 10.5px; color: var(--muted); margin-top: 10px; line-height: 1.5;
+      padding: 9px 11px; border-radius: 10px; background: var(--card); border: 1px solid var(--border);
+    }
+    .footer {
+      display: flex; justify-content: space-between; align-items: center;
+      font-size: 10.5px; color: var(--muted); margin-top: 14px;
+    }
+    .shield { display: inline-flex; align-items: center; gap: 4px; }
+  </style>
+</head>
+<body>
+  <div class="head">
+    <div class="mark">WB</div>
+    <div>
+      <div class="title">Agent WebBridge CLI</div>
+      <div class="sub">Browser Use CLI 3.0 · local relay</div>
+    </div>
+  </div>
+
+  <span class="badge" id="badge"><span class="dot"></span><span id="status">Checking…</span></span>
+
+  <label for="url">Daemon WebSocket URL</label>
+  <input id="url" type="text" spellcheck="false" placeholder="ws://127.0.0.1:9377/ext">
+  <button id="save">Save &amp; reconnect</button>
+
+  <div class="hint">The daemon gains full control of this browser. Only connect to a localhost server you trust.</div>
+
+  <div class="footer">
+    <span id="version"></span>
+    <span class="shield">&#128274; 127.0.0.1 only</span>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

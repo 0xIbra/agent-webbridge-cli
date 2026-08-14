@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Agent WebBridge CLI",
+  "version": "0.2.0",
+  "description": "Lets Browser Use CLI 3.0 drive your real Chrome and your real login sessions through a local CDP relay. Script-based and token-efficient: the agent writes one Python script instead of a tool call per click. No account, no telemetry, nothing leaves 127.0.0.1.",
+  "permissions": ["debugger", "tabs", "alarms", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Agent WebBridge CLI"
+  }
+}
