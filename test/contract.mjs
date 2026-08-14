@@ -18,7 +18,7 @@ import { EventEmitter } from "node:events";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 import { MAX_BROWSER_BUFFER_BYTES, sendBrowserMessage } from "../src/daemon/browser-ws.mjs";
-import { handleBrowser } from "../src/daemon/cdp.mjs";
+import { handleBrowser, safeUploadFiles } from "../src/daemon/cdp.mjs";
 import { extRequest, handleExt, waitForExt } from "../src/daemon/ext.mjs";
 import { state } from "../src/daemon/state.mjs";
 
@@ -76,6 +76,23 @@ function getFreePort() {
     });
   });
 }
+
+const uploadRoot = fs.mkdtempSync(path.join(os.tmpdir(), `awb-upload-root-${process.pid}-`));
+const uploadFile = path.join(uploadRoot, "input.txt");
+const outsideUpload = path.join(os.tmpdir(), `awb-upload-outside-${process.pid}.txt`);
+const uploadSymlink = path.join(uploadRoot, "leak.txt");
+fs.writeFileSync(uploadFile, "uploaded");
+fs.writeFileSync(outsideUpload, "outside");
+fs.symlinkSync(outsideUpload, uploadSymlink);
+check("file input accepts a regular file under OB_UPLOAD_ROOT",
+  safeUploadFiles({ files: [uploadFile], nodeId: 1 }, uploadRoot).files[0] === fs.realpathSync(uploadFile));
+for (const candidate of [outsideUpload, uploadSymlink, "/etc/passwd"]) {
+  let rejected = false;
+  try { safeUploadFiles({ files: [candidate], nodeId: 1 }, uploadRoot); } catch { rejected = true; }
+  check(`file input rejects unstaged path ${path.basename(candidate)}`, rejected);
+}
+fs.rmSync(uploadRoot, { recursive: true, force: true });
+fs.rmSync(outsideUpload, { force: true });
 
 function httpResponse(port, urlPath, token = "") {
   return new Promise((resolve, reject) => {

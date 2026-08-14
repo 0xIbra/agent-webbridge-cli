@@ -11,10 +11,41 @@ import path from "node:path";
 import { registerBrowserClient, sendBrowserMessage, unregisterBrowserClient } from "./browser-ws.mjs";
 
 const DOWNLOAD_ROOT = process.env.OB_DOWNLOAD_ROOT ? path.resolve(process.env.OB_DOWNLOAD_ROOT) : null;
+const UPLOAD_ROOT = process.env.OB_UPLOAD_ROOT ? path.resolve(process.env.OB_UPLOAD_ROOT) : null;
+const MAX_UPLOAD_FILES = 8;
+const MAX_UPLOAD_BYTES = 16 * 1024 * 1024;
 export const MAX_TAB_QUEUE_DEPTH = 64;
 export const MAX_BROWSER_CLIENTS = 32;
 export const MAX_CLIENT_INFLIGHT = 64;
 const browserInflight = new WeakMap();
+
+export function safeUploadFiles(params, root = UPLOAD_ROOT) {
+  if (!root || !params || typeof params !== "object" || Array.isArray(params)) {
+    throw new Error("file input staging is unavailable");
+  }
+  const files = params.files;
+  if (!Array.isArray(files) || files.length < 1 || files.length > MAX_UPLOAD_FILES) {
+    throw new Error("file input requires bounded staged files");
+  }
+  const resolvedRoot = fs.realpathSync(root);
+  const rootInfo = fs.lstatSync(root);
+  if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) throw new Error("file input staging is unavailable");
+  const safeFiles = files.map((file) => {
+    if (typeof file !== "string" || !path.isAbsolute(file)) throw new Error("file input path is invalid");
+    const info = fs.lstatSync(file);
+    const resolved = fs.realpathSync(file);
+    if (
+      info.isSymbolicLink()
+      || !info.isFile()
+      || info.size > MAX_UPLOAD_BYTES
+      || !resolved.startsWith(resolvedRoot + path.sep)
+    ) {
+      throw new Error("file input path is outside the staging root");
+    }
+    return resolved;
+  });
+  return { ...params, files: safeFiles };
+}
 
 function safeDownloadDestination(requested) {
   const destination = path.resolve(String(requested || ""));
@@ -176,7 +207,10 @@ export async function route(m, client) {
     if (!state.clients.has(client) || state.sessions.get(m.sessionId) !== session) {
       throw new Error("browser session revoked");
     }
-    return extCmd(session.tabId, m.method, m.params || {});
+    const params = m.method === "DOM.setFileInputFiles"
+      ? safeUploadFiles(m.params)
+      : (m.params || {});
+    return extCmd(session.tabId, m.method, params);
   });
 }
 
