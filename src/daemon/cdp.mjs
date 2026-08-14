@@ -180,7 +180,9 @@ export async function route(m, client) {
   });
 }
 
-async function cleanupClient(client) {
+const clientCleanup = new WeakMap();
+
+async function performClientCleanup(client) {
   unregisterBrowserClient(client);
   browserInflight.delete(client);
   state.clients.delete(client);
@@ -197,6 +199,31 @@ async function cleanupClient(client) {
     if (transfer.client === client) state.downloadTransfers.delete(guid);
   }
   await Promise.all([...tabs].map((tabId) => detachIfUnused(tabId)));
+}
+
+function cleanupClient(client) {
+  const existing = clientCleanup.get(client);
+  if (existing) return existing;
+  const cleanup = performClientCleanup(client);
+  clientCleanup.set(client, cleanup);
+  return cleanup;
+}
+
+export async function shutdownBrowserClients() {
+  const clients = [...state.clients];
+  for (const client of clients) {
+    state.clients.delete(client);
+    unregisterBrowserClient(client);
+    browserInflight.delete(client);
+    try { client.terminate?.(); } catch {}
+  }
+  await Promise.all(clients.map((client) => cleanupClient(client)));
+
+  const leftoverTabs = new Set([...state.sessions.values()].map((session) => session.tabId));
+  state.sessions.clear();
+  state.downloadPolicies.clear();
+  state.downloadTransfers.clear();
+  await Promise.all([...leftoverTabs].map((tabId) => extDetach(tabId)));
 }
 
 export function handleBrowser(ws) {

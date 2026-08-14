@@ -81,11 +81,19 @@ async function cmdDown() {
   try { pid = Number(fs.readFileSync(PID_FILE, "utf8").trim().split(" ")[0]); } catch {}
   if (pid) {
     try { process.kill(pid, "SIGTERM"); } catch {}
-    await sleep(300);
+    for (let attempt = 0; attempt < 60; attempt++) {
+      await sleep(100);
+      try { process.kill(pid, 0); } catch { pid = null; break; }
+    }
   }
   try { fs.rmSync(PID_FILE, { force: true }); } catch {}
-  const still = await getStatus(daemonPort());
-  console.log(still ? "[awb-cli] daemon still running (manual kill needed)" : "[awb-cli] daemon stopped");
+  const still = pid !== null || await getStatus(daemonPort());
+  if (still) {
+    console.error("[awb-cli] daemon shutdown could not be confirmed");
+    process.exitCode = 1;
+    return;
+  }
+  console.log("[awb-cli] daemon stopped");
 }
 
 async function cmdStatus() {

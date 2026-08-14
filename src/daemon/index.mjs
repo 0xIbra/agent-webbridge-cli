@@ -7,7 +7,7 @@ import http from "node:http";
 import { WebSocketServer } from "ws";
 import { state } from "./state.mjs";
 import { handleExt } from "./ext.mjs";
-import { handleBrowser } from "./cdp.mjs";
+import { handleBrowser, shutdownBrowserClients } from "./cdp.mjs";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -93,3 +93,25 @@ server.on("upgrade", (req, socket, head) => {
 server.listen(PORT, HOST, () => {
   console.log(`[awb-cli] v${PKG.version} listening on http://${HOST}:${PORT} (ext /ext, CDP /devtools/browser/awb)`);
 });
+
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  server.close();
+  const forced = setTimeout(() => process.exit(1), 8_000);
+  forced.unref?.();
+  try {
+    await shutdownBrowserClients();
+    try { state.ext?.close(1001, "daemon shutdown"); } catch {}
+    await new Promise((resolve) => wss.close(resolve));
+    clearTimeout(forced);
+    process.exit(0);
+  } catch {
+    clearTimeout(forced);
+    process.exit(1);
+  }
+}
+
+process.once("SIGTERM", () => { void shutdown(); });
+process.once("SIGINT", () => { void shutdown(); });
