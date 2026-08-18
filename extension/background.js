@@ -19,20 +19,53 @@ const DEFAULT_WS = "ws://127.0.0.1:9377/ext";
 
 let sock = null;
 let serverUrl = DEFAULT_WS;
+let connectPending = false;
+let reconnectTimer = null;
 const attached = new Map(); // tabId -> true
 
 function post(msg) {
   if (sock && sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify(msg));
 }
 
-function connect() {
-  if (sock && (sock.readyState === WebSocket.OPEN || sock.readyState === WebSocket.CONNECTING)) return;
+function scheduleReconnect() {
+  if (reconnectTimer !== null) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    void connect();
+  }, 2000);
+}
+
+async function daemonAvailable() {
+  const probeUrl = new URL(serverUrl);
+  probeUrl.protocol = probeUrl.protocol === "wss:" ? "https:" : "http:";
+  probeUrl.pathname = "/status";
+  probeUrl.search = "";
+  probeUrl.hash = "";
+  try {
+    await fetch(probeUrl, { method: "GET", mode: "no-cors", cache: "no-store" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function connect() {
+  if (connectPending || (sock && (sock.readyState === WebSocket.OPEN || sock.readyState === WebSocket.CONNECTING))) return;
+  connectPending = true;
+  if (!await daemonAvailable()) {
+    connectPending = false;
+    scheduleReconnect();
+    return;
+  }
   try {
     sock = new WebSocket(serverUrl);
   } catch {
     sock = null;
+    connectPending = false;
+    scheduleReconnect();
     return;
   }
+  connectPending = false;
   sock.addEventListener("open", () => {
     post({
       type: "hello",
@@ -43,7 +76,7 @@ function connect() {
   sock.addEventListener("message", (ev) => {
     try { handle(JSON.parse(ev.data)); } catch (e) { console.error("[ouro-bridge]", e); }
   });
-  sock.addEventListener("close", () => { sock = null; setTimeout(connect, 2000); });
+  sock.addEventListener("close", () => { sock = null; scheduleReconnect(); });
   sock.addEventListener("error", () => { try { sock.close(); } catch {} });
 }
 
