@@ -1,7 +1,7 @@
 ---
 name: agent-webbridge-cli
 description: "Browser Use CLI 3.0 on your real Chrome via local CDP relay."
-version: 0.1.0
+version: 0.1.1
 author: 0xIbra
 license: MIT
 platforms: [macos, linux]
@@ -43,13 +43,15 @@ rendering, or bot-protected pages.
 
 Check readiness, then run a script via heredoc:
 
+Choose whether to continue in an existing tab or open a separate one from the
+task and current browser state; there is no fixed first-navigation rule.
+
 ```bash
 awb-cli status   # expect: extension: CONNECTED
 
 BU_CDP_WS=ws://127.0.0.1:9377/devtools/browser/awb browser-harness <<'PY'
 print("TABS:", list_tabs())
-t = new_tab("https://example.com/")   # FIRST navigation is new_tab, not goto_url
-wait_for_load()
+print("PAGE:", page_info())
 print("TITLE:", js("document.title"))
 capture_screenshot("/tmp/page.png")
 PY
