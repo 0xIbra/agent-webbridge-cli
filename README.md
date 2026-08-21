@@ -65,6 +65,11 @@ print(list_tabs())
 PY
 ```
 
+Inside a scoped script, raw `cdp()` can list, create, update, move, dissolve,
+or close owned groups through the `AWB.*` methods documented in
+`BUILD_SPEC.md`. `new_tab()` keeps adding tabs to the session's default group;
+`AWB.createGroup` and `AWB.moveTargets` organize additional owned groups.
+
 ## CLI
 
 | Command | Does |

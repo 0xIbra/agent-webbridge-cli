@@ -795,6 +795,37 @@ async function main() {
   const explicitNewTarget = await resumedA.cdp("Target.createTarget", { url: "about:blank", background: true });
   check("an explicit new tab still creates a distinct target after startup attach",
     explicitNewTarget.targetId !== scopedTarget.targetId && typeof resumedSession.sessionId === "string");
+  const bulkTarget = await resumedA.cdp("Target.createTarget", { url: "about:blank", background: true });
+  let managedGroupId = null;
+  let groupManagementWorks = false;
+  try {
+    const initialGroups = await resumedA.cdp("AWB.getGroups", {}, resumedSession.sessionId);
+    const created = await resumedA.cdp("AWB.createGroup", {
+      targetIds: [explicitNewTarget.targetId, bulkTarget.targetId],
+      title: "Sources",
+      color: "green",
+    }, resumedSession.sessionId);
+    managedGroupId = created.groupId;
+    const grouped = await resumedA.cdp("AWB.getGroups", {}, resumedSession.sessionId);
+    await resumedA.cdp("AWB.updateGroup", {
+      groupId: managedGroupId,
+      title: "References",
+      color: "purple",
+      collapsed: true,
+    }, resumedSession.sessionId);
+    await resumedA.cdp("AWB.moveGroup", { groupId: managedGroupId, index: 0 }, resumedSession.sessionId);
+    await resumedA.cdp("AWB.ungroupTargets", { targetIds: [bulkTarget.targetId] }, resumedSession.sessionId);
+    await resumedA.cdp("AWB.moveTargets", {
+      targetIds: [bulkTarget.targetId],
+      groupId: managedGroupId,
+    }, resumedSession.sessionId);
+    groupManagementWorks = initialGroups.groups.length === 1
+      && grouped.groups.some((group) => group.groupId === managedGroupId
+        && group.targetIds.length === 2
+        && group.title === "Sources"
+        && group.color === "green");
+  } catch {}
+  check("a scoped session can create and manage multiple groups with multiple tabs", groupManagementWorks);
 
   const scopedB = cdpClient(port, "", { session: "research-b", groupTitle: "Research B" });
   await waitOpen(scopedB.ws);
@@ -807,6 +838,19 @@ async function main() {
     crossSessionAttachRejected = true;
   }
   check("a scoped browser session cannot attach to another session's tab", crossSessionAttachRejected);
+  let crossSessionGroupRejected = false;
+  try {
+    await scopedB.cdp("AWB.updateGroup", { groupId: managedGroupId, title: "Stolen" });
+  } catch {
+    crossSessionGroupRejected = true;
+  }
+  check("a scoped browser session cannot manage another session's group", crossSessionGroupRejected);
+  if (managedGroupId !== null) {
+    await resumedA.cdp("AWB.closeGroup", { groupId: managedGroupId }, resumedSession.sessionId);
+  }
+  const afterGroupClose = await resumedA.cdp("Target.getTargets");
+  check("closing an owned group closes only that group's owned tabs",
+    afterGroupClose.targetInfos.length === 1 && afterGroupClose.targetInfos[0].targetId === scopedTarget.targetId);
 
   const tabops = fs.readFileSync(tabopFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
   check("scoped targets are created in the background and assigned to their titled group",
@@ -815,7 +859,6 @@ async function main() {
         && message.params.tabId === Number(scopedTarget.targetId.replace(/^awb-/, ""))
         && message.params.title === "Research A"));
   scopedB.ws.close();
-  await resumedA.cdp("Target.closeTarget", { targetId: explicitNewTarget.targetId });
   await resumedA.cdp("Target.closeTarget", { targetId: scopedTarget.targetId });
   resumedA.ws.close();
 

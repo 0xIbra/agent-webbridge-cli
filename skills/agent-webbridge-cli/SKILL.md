@@ -1,7 +1,7 @@
 ---
 name: agent-webbridge-cli
 description: "Browser Use CLI 3.0 on your real Chrome via local CDP relay."
-version: 0.2.0
+version: 0.3.0
 author: 0xIbra
 license: MIT
 platforms: [macos, linux]
@@ -57,21 +57,13 @@ capture_screenshot("/tmp/page.png")
 PY
 ```
 
-When the task should have its own reusable Chrome group, keep one stable task
-name across calls and pass it to both Browser Harness and the bridge:
-
-```bash
-BU_NAME=task-name \
-BU_CDP_WS='ws://127.0.0.1:9377/devtools/browser/awb?session=task-name&group_title=Task%20name' \
-browser-harness <<'PY'
-print("TABS:", list_tabs())
-PY
-```
-
-That scoped session sees only its own tabs, groups newly created tabs, and
-reuses them when a fresh Browser Harness daemon reconnects. Use the unscoped URL
-when the task intentionally needs to inspect or continue in an existing user
-tab.
+On shared Chrome, always use one stable scoped session for agent-created tabs
+so other agents cannot interfere: set matching `BU_NAME` and
+`?session=...&group_title=...` on `BU_CDP_WS`, then reuse that name across calls.
+Use an unscoped URL only to intentionally borrow an existing user tab.
+`new_tab()` uses the session's default group; extra owned groups are managed
+through raw `cdp()` methods `AWB.{getGroups,createGroup,updateGroup,moveGroup,
+moveTargets,ungroupTargets,closeGroup}`.
 
 ## Quick Reference
 
@@ -111,5 +103,5 @@ Helpers are pre-imported: `page_info()`, `js(expr)`, `new_tab(url)`,
 
 - Smoke: `new_tab("https://example.com/")` → `wait_for_load()` →
   `js("document.title")` returns "🐴 Example Domain" → `close_tab()`.
-- `awb-cli test` — 69 daemon contract cases plus 4 extension cases must pass.
+- `awb-cli test` — 72 daemon contract cases plus 5 extension cases must pass.
 - Live evidence beats logs: screenshot to a path and read the pixels.

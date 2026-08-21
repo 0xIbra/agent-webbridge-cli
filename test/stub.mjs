@@ -11,8 +11,10 @@ const ws = new WebSocket(
   process.env.STUB_EXT_ORIGIN ? { origin: process.env.STUB_EXT_ORIGIN } : {},
 );
 let tabSeq = 1;
+let groupSeq = 100;
 let cancelAttempts = 0;
 const tabs = [{ id: 1, title: "Stub tab", url: "https://example.com/", active: true, windowId: 1 }];
+const groups = new Map();
 const PAGE = { url: "https://example.com/", title: "Stub tab", w: 1280, h: 800, sx: 0, sy: 0, pw: 1280, ph: 2400 };
 
 const runtimeId = process.env.STUB_RID || "stub-ext";
@@ -36,16 +38,31 @@ ws.on("message", (d) => {
       return ws.send(JSON.stringify({ type: "res", id: m.id, result: t }));
     }
     if (m.op === "remove") {
-      const i = tabs.findIndex((x) => x.id === m.params.tabId);
-      if (i >= 0) tabs.splice(i, 1);
+      const ids = new Set(Array.isArray(m.params.tabId) ? m.params.tabId : [m.params.tabId]);
+      for (let i = tabs.length - 1; i >= 0; i--) if (ids.has(tabs[i].id)) tabs.splice(i, 1);
+      for (const [groupId] of groups) if (!tabs.some((tab) => tab.groupId === groupId)) groups.delete(groupId);
       return ws.send(JSON.stringify({ type: "res", id: m.id, result: {} }));
     }
     if (m.op === "activate") return ws.send(JSON.stringify({ type: "res", id: m.id, result: {} }));
     if (m.op === "group") {
-      const t = tabs.find((x) => x.id === m.params.tabId);
-      if (!t) return ws.send(JSON.stringify({ type: "res", id: m.id, error: { code: -32000, message: "no tab " + m.params.tabId } }));
-      t.groupId = Number.isInteger(m.params.groupId) ? m.params.groupId : (100 + t.id);
-      return ws.send(JSON.stringify({ type: "res", id: m.id, result: { groupId: t.groupId } }));
+      const ids = m.params.tabIds || [m.params.tabId];
+      const grouped = tabs.filter((tab) => ids.includes(tab.id));
+      if (grouped.length !== ids.length) return ws.send(JSON.stringify({ type: "res", id: m.id, error: { code: -32000, message: "no tab" } }));
+      const groupId = Number.isInteger(m.params.groupId) ? m.params.groupId : ++groupSeq;
+      groups.set(groupId, { id: groupId, title: m.params.title, color: m.params.color || "grey", collapsed: false, windowId: 1 });
+      for (const tab of grouped) tab.groupId = groupId;
+      return ws.send(JSON.stringify({ type: "res", id: m.id, result: { groupId } }));
+    }
+    if (m.op === "groups") return ws.send(JSON.stringify({ type: "res", id: m.id, result: [...groups.values()] }));
+    if (m.op === "groupupdate") {
+      groups.set(m.params.groupId, { ...groups.get(m.params.groupId), ...m.params.properties });
+      return ws.send(JSON.stringify({ type: "res", id: m.id, result: groups.get(m.params.groupId) }));
+    }
+    if (m.op === "groupmove") return ws.send(JSON.stringify({ type: "res", id: m.id, result: groups.get(m.params.groupId) }));
+    if (m.op === "ungroup") {
+      for (const tab of tabs) if (m.params.tabIds.includes(tab.id)) tab.groupId = -1;
+      for (const [groupId] of groups) if (!tabs.some((tab) => tab.groupId === groupId)) groups.delete(groupId);
+      return ws.send(JSON.stringify({ type: "res", id: m.id, result: {} }));
     }
     return ws.send(JSON.stringify({ type: "res", id: m.id, result: {} }));
   }

@@ -39,6 +39,14 @@ Browser-level WS (no sessionId), Target.* emulation:
 - `Target.detachFromTarget {sessionId}`
 - `Target.setDiscoverTargets/setAutoAttach/setAttachToOtherTargets/setRemoteLocations` → ack `{}`
 
+Scoped Agent WebBridge group control (accepted with or without a CDP sessionId):
+- `AWB.getGroups` → owned groups with title/color/collapsed/windowId/targetIds
+- `AWB.createGroup {targetIds,title,color?,collapsed?}` → `{groupId}`
+- `AWB.updateGroup {groupId,title?|color?|collapsed?}`
+- `AWB.moveGroup {groupId,index,windowId?}`
+- `AWB.moveTargets {targetIds,groupId}` / `AWB.ungroupTargets {targetIds}`
+- `AWB.closeGroup {groupId}` → `{closed}`; closes only owned tabs
+
 Session-scoped (routed per tab to chrome.debugger):
 - Page.* (navigate, captureScreenshot, enable, events: loadEventFired,
   domContentEventFired, javascriptDialogOpening/Closed)
@@ -59,7 +67,7 @@ ext -> daemon: {type:"hello", extensionVersion, runtimeId}
                {type:"evt", tabId, method, params}
                {type:"ping"}                          // heartbeat, ignored by daemon
 daemon -> ext: {type:"cmd", id, tabId, method, params}
-               {type:"tabop", id, op, params}         // create|remove|activate|list|get|group
+               {type:"tabop", id, op, params}         // tab + group CRUD/move/query
                {type:"detach", tabId}
                {type:"setDownloadBehavior", id, tabId, behavior}
 ```
@@ -117,6 +125,9 @@ daemon -> ext: {type:"cmd", id, tabId, method, params}
   distinct targets. Ownership survives Browser Harness daemon reconnects for
   the lifetime of the Agent WebBridge daemon. Unscoped clients retain the
   existing all-tabs behavior. Session state is capped at 128 entries.
+- Group methods require a scoped client, accept at most 64 unique owned targets,
+  cap each session at 64 groups, and reject foreign target/group IDs. Normal
+  `new_tab()` calls continue to use the session's default group.
 - Attach happens lazily on the first command to a tab. Flatten sessions are
   owned by the Browser Harness WebSocket that created them. Closing that socket
   deletes its sessions and sends `detach` for each tab no remaining client uses;

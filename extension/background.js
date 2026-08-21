@@ -86,23 +86,30 @@ async function ensureAttach(tabId) {
   attached.set(tabId, true);
 }
 
-async function groupTab({ tabId, groupId, title }) {
+async function groupTab({ tabId, tabIds, groupId, title, color, collapsed, strict }) {
+  const ids = tabIds || [tabId];
   let resolvedGroupId = Number.isInteger(groupId) ? groupId : null;
   if (resolvedGroupId !== null) {
     try {
-      await chrome.tabs.group({ groupId: resolvedGroupId, tabIds: [tabId] });
-    } catch {
+      await chrome.tabs.group({ groupId: resolvedGroupId, tabIds: ids });
+    } catch (error) {
+      if (strict) throw error;
       resolvedGroupId = null;
     }
   }
   if (resolvedGroupId === null) {
-    const tab = await chrome.tabs.get(tabId);
+    const tab = await chrome.tabs.get(ids[0]);
     resolvedGroupId = await chrome.tabs.group({
       createProperties: { windowId: tab.windowId },
-      tabIds: [tabId],
+      tabIds: ids,
     });
   }
-  await chrome.tabGroups.update(resolvedGroupId, { title });
+  const properties = {
+    ...(title !== undefined ? { title } : {}),
+    ...(color !== undefined ? { color } : {}),
+    ...(collapsed !== undefined ? { collapsed } : {}),
+  };
+  if (Object.keys(properties).length) await chrome.tabGroups.update(resolvedGroupId, properties);
   return { groupId: resolvedGroupId };
 }
 
@@ -126,6 +133,10 @@ async function handle(m) {
       else if (op === "list") result = await chrome.tabs.query(params || {});
       else if (op === "get") result = await chrome.tabs.get(params.tabId);
       else if (op === "group") result = await groupTab(params || {});
+      else if (op === "groups") result = await chrome.tabGroups.query(params || {});
+      else if (op === "groupupdate") result = await chrome.tabGroups.update(params.groupId, params.properties);
+      else if (op === "groupmove") result = await chrome.tabGroups.move(params.groupId, params.properties);
+      else if (op === "ungroup") { await chrome.tabs.ungroup(params.tabIds); result = {}; }
       else throw new Error("unknown tabop " + op);
       post({ type: "res", id, result });
     } catch (e) {

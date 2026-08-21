@@ -98,10 +98,18 @@ async function bootExtension({ daemonAvailable }) {
         },
         query: async () => [],
         remove: async () => {},
+        ungroup: async (tabIds) => {
+          groupCalls.push({ method: "ungroup", tabIds });
+        },
         update: async () => ({}),
         onRemoved: listener,
       },
       tabGroups: {
+        move: async (groupId, options) => {
+          groupCalls.push({ method: "move", groupId, options });
+          return { id: groupId };
+        },
+        query: async () => [{ id: 44, title: "Research task", color: "blue", collapsed: false }],
         update: async (groupId, options) => {
           groupCalls.push({ method: "update", groupId, options });
           return { id: groupId, ...options };
@@ -126,16 +134,31 @@ available.sockets[0].listeners.get("message")({ data: JSON.stringify({
   type: "tabop",
   id: 7,
   op: "group",
-  params: { tabId: 9, title: "Research task" },
+  params: { tabIds: [9, 10], title: "Research task" },
 }) });
 await new Promise((resolve) => setImmediate(resolve));
 check("group tabops create and title a Chrome tab group",
   available.groupCalls.length === 2
     && available.groupCalls[0].method === "group"
-    && available.groupCalls[0].options.tabIds[0] === 9
+    && available.groupCalls[0].options.tabIds.join(",") === "9,10"
     && available.groupCalls[1].method === "update"
     && available.groupCalls[1].options.title === "Research task"
     && available.sockets[0].sent.some((message) => message.id === 7 && message.result.groupId === 44));
+
+for (const message of [
+  { id: 8, op: "groups", params: {} },
+  { id: 9, op: "groupupdate", params: { groupId: 44, properties: { title: "Sources", collapsed: true } } },
+  { id: 10, op: "groupmove", params: { groupId: 44, properties: { index: 0 } } },
+  { id: 11, op: "ungroup", params: { tabIds: [9] } },
+]) {
+  available.sockets[0].listeners.get("message")({ data: JSON.stringify({ type: "tabop", ...message }) });
+}
+await new Promise((resolve) => setImmediate(resolve));
+check("tab group query, update, move, and ungroup tabops are relayed",
+  available.sockets[0].sent.some((message) => message.id === 8 && Array.isArray(message.result) && message.result[0].id === 44)
+    && available.groupCalls.some((call) => call.method === "update" && call.options.title === "Sources")
+    && available.groupCalls.some((call) => call.method === "move" && call.options.index === 0)
+    && available.groupCalls.some((call) => call.method === "ungroup" && call.tabIds[0] === 9));
 check("the extension declares Chrome tab-group access", MANIFEST.permissions.includes("tabGroups"));
 
 console.log(`\n${passed} passed, ${failed} failed`);
