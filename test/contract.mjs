@@ -181,8 +181,12 @@ function waitForChildExit(child, timeoutMs) {
   });
 }
 
-function cdpClient(port, token = "") {
-  const suffix = token ? `?token=${encodeURIComponent(token)}` : "";
+function cdpClient(port, token = "", scope = {}) {
+  const query = new URLSearchParams();
+  if (token) query.set("token", token);
+  if (scope.session) query.set("session", scope.session);
+  if (scope.groupTitle) query.set("group_title", scope.groupTitle);
+  const suffix = query.size ? `?${query}` : "";
   const ws = new WebSocket(`ws://${HOST}:${port}/devtools/browser/awb${suffix}`);
   const inflight = new Map();
   let idSeq = 1;
@@ -737,8 +741,10 @@ async function main() {
   // --- CDP surface against the stub extension ---
   const detachFile = path.join(os.tmpdir(), `awb-detach-${process.pid}-${port}`);
   const inputFile = path.join(os.tmpdir(), `awb-input-${process.pid}-${port}`);
+  const tabopFile = path.join(os.tmpdir(), `awb-tabops-${process.pid}-${port}`);
   try { fs.rmSync(detachFile, { force: true }); } catch {}
   try { fs.rmSync(inputFile, { force: true }); } catch {}
+  try { fs.rmSync(tabopFile, { force: true }); } catch {}
   const stub = startStub(port, {
     STUB_DETACH_FILE: detachFile,
     STUB_DOWNLOAD_GUID: downloadGuid,
@@ -754,6 +760,7 @@ async function main() {
     STUB_CANCEL_ATTEMPT_FILE: cancelAttemptFile,
     STUB_CANCEL_FAILS: "1",
     STUB_INPUT_FILE: inputFile,
+    STUB_TABOP_FILE: tabopFile,
   });
   await waitFor(() => httpJson(port, "/status").then((s) => s.extension_connected));
 
@@ -763,6 +770,54 @@ async function main() {
   const { targetInfos } = await cdp("Target.getTargets");
   check("getTargets returns page targets", Array.isArray(targetInfos) && targetInfos.length >= 1 && targetInfos[0].type === "page");
   const t0 = targetInfos[0];
+
+  const scopedA = cdpClient(port, "", { session: "research-a", groupTitle: "Research A" });
+  await waitOpen(scopedA.ws);
+  const initialScopedTargets = await scopedA.cdp("Target.getTargets");
+  check("a fresh scoped browser session does not adopt unrelated user tabs",
+    initialScopedTargets.targetInfos.length === 0);
+  const scopedTarget = await scopedA.cdp("Target.createTarget", { url: "about:blank", background: true });
+  scopedA.ws.close();
+  await sleep(100);
+
+  const resumedA = cdpClient(port, "", { session: "research-a", groupTitle: "Research A" });
+  await waitOpen(resumedA.ws);
+  const resumedTargets = await resumedA.cdp("Target.getTargets");
+  check("a fresh harness connection reuses its scoped tab instead of creating another blank tab",
+    resumedTargets.targetInfos.length === 1 && resumedTargets.targetInfos[0].targetId === scopedTarget.targetId);
+  const resumedBootstrapTarget = await resumedA.cdp("Target.createTarget", { url: "about:blank", background: true });
+  check("named Browser Harness startup reuses the scoped target when it requests a fresh bootstrap tab",
+    resumedBootstrapTarget.targetId === scopedTarget.targetId);
+  const resumedSession = await resumedA.cdp("Target.attachToTarget", {
+    targetId: resumedBootstrapTarget.targetId,
+    flatten: true,
+  });
+  const explicitNewTarget = await resumedA.cdp("Target.createTarget", { url: "about:blank", background: true });
+  check("an explicit new tab still creates a distinct target after startup attach",
+    explicitNewTarget.targetId !== scopedTarget.targetId && typeof resumedSession.sessionId === "string");
+
+  const scopedB = cdpClient(port, "", { session: "research-b", groupTitle: "Research B" });
+  await waitOpen(scopedB.ws);
+  const scopedBTargets = await scopedB.cdp("Target.getTargets");
+  check("different browser sessions have separate target inventories", scopedBTargets.targetInfos.length === 0);
+  let crossSessionAttachRejected = false;
+  try {
+    await scopedB.cdp("Target.attachToTarget", { targetId: scopedTarget.targetId, flatten: true });
+  } catch {
+    crossSessionAttachRejected = true;
+  }
+  check("a scoped browser session cannot attach to another session's tab", crossSessionAttachRejected);
+
+  const tabops = fs.readFileSync(tabopFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  check("scoped targets are created in the background and assigned to their titled group",
+    tabops.some((message) => message.op === "create" && message.params.active === false)
+      && tabops.some((message) => message.op === "group"
+        && message.params.tabId === Number(scopedTarget.targetId.replace(/^awb-/, ""))
+        && message.params.title === "Research A"));
+  scopedB.ws.close();
+  await resumedA.cdp("Target.closeTarget", { targetId: explicitNewTarget.targetId });
+  await resumedA.cdp("Target.closeTarget", { targetId: scopedTarget.targetId });
+  resumedA.ws.close();
 
   const { sessionId } = await cdp("Target.attachToTarget", { targetId: t0.targetId, flatten: true });
   check("attachToTarget returns sessionId", typeof sessionId === "string" && sessionId.length > 0);

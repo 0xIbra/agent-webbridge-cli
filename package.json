@@ -1,6 +1,6 @@
 {
   "name": "agent-webbridge-cli",
-  "version": "0.2.9",
+  "version": "0.3.0",
   "description": "Browser Use CLI 3.0 for your real Chrome: a clean-room local CDP relay (MV3 extension + daemon) that lets the script-based browser harness drive your actual browser sessions — 48-66% fewer tokens than per-click browser tools.",
   "type": "module",
   "bin": {

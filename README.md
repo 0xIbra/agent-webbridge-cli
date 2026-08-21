@@ -18,6 +18,7 @@ browser-harness ──CDP over WS──▶ daemon ──WS──▶ MV3 extensio
 
 - **Real sessions** — your cookies, your logins, your extensions. Nothing re-logged-in headless.
 - **Trusted clicks** — CDP Input domain passes through to chrome.debugger, so clicks are real compositor-level events, not `el.click()`.
+- **Task tab groups** — scoped Browser Harness sessions reuse their own tabs and keep new tabs in one named Chrome group.
 - **Clean room** — our own extension, our own daemon. No closed code, no account, no telemetry. MIT.
 - **One dep** — the daemon uses only `ws`. The extension uses zero libraries.
 
@@ -49,6 +50,18 @@ t = new_tab("https://news.ycombinator.com/")
 wait_for_load()
 print("TITLE:", js("document.title"))
 capture_screenshot("/tmp/hn.png")
+PY
+```
+
+For an isolated task group, use the same stable task name for Browser Harness
+and the bridge scope. Fresh Harness processes then reconnect to the existing
+group instead of leaving another `about:blank` tab:
+
+```bash
+BU_NAME=hn-research \
+BU_CDP_WS='ws://127.0.0.1:9377/devtools/browser/awb?session=hn-research&group_title=HN%20research' \
+browser-harness <<'PY'
+print(list_tabs())
 PY
 ```
 

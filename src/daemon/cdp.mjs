@@ -17,7 +17,10 @@ const MAX_UPLOAD_BYTES = 16 * 1024 * 1024;
 export const MAX_TAB_QUEUE_DEPTH = 64;
 export const MAX_BROWSER_CLIENTS = 32;
 export const MAX_CLIENT_INFLIGHT = 64;
+export const MAX_BROWSER_TAB_SESSIONS = 128;
 const browserInflight = new WeakMap();
+const browserScopes = new WeakMap();
+const browserBootstrapTargets = new WeakMap();
 
 export function safeUploadFiles(params, root = UPLOAD_ROOT) {
   if (!root || !params || typeof params !== "object" || Array.isArray(params)) {
@@ -97,9 +100,64 @@ function targetInfo(tab) {
   };
 }
 
-async function listTargetInfos() {
+async function listTargetInfos(client) {
   const tabs = await extTabOp("list", {});
-  return tabs.map(targetInfo);
+  const scope = browserScopes.get(client);
+  if (!scope) return tabs.map(targetInfo);
+  const owned = state.browserTabSessions.get(scope.session);
+  if (!owned) return [];
+  const liveTabs = tabs.filter((tab) => owned.tabIds.has(tab.id));
+  const liveIds = new Set(liveTabs.map((tab) => tab.id));
+  for (const tabId of owned.tabIds) if (!liveIds.has(tabId)) owned.tabIds.delete(tabId);
+  if (owned.tabIds.size === 0) {
+    state.browserTabSessions.delete(scope.session);
+  } else if (![...state.sessions.values()].some((session) => session.client === client)) {
+    const bootstrap = liveIds.has(owned.lastTargetId) ? owned.lastTargetId : liveTabs[0].id;
+    browserBootstrapTargets.set(client, bootstrap);
+  }
+  return liveTabs.map(targetInfo);
+}
+
+function ownedTabSession(client, create = false) {
+  const scope = browserScopes.get(client);
+  if (!scope) return null;
+  let owned = state.browserTabSessions.get(scope.session);
+  if (!owned && create) {
+    if (state.browserTabSessions.size >= MAX_BROWSER_TAB_SESSIONS) {
+      throw new Error("too many browser tab sessions");
+    }
+    owned = {
+      groupId: null,
+      title: scope.groupTitle,
+      tabIds: new Set(),
+      lastTargetId: null,
+      tail: Promise.resolve(),
+    };
+    state.browserTabSessions.set(scope.session, owned);
+  }
+  return owned;
+}
+
+function requireOwnedTab(client, tabId) {
+  const scope = browserScopes.get(client);
+  if (!scope) return;
+  if (!state.browserTabSessions.get(scope.session)?.tabIds.has(tabId)) {
+    throw new Error("target is outside this browser session");
+  }
+}
+
+function forgetTab(tabId) {
+  for (const [session, owned] of state.browserTabSessions) {
+    owned.tabIds.delete(tabId);
+    if (owned.lastTargetId === tabId) owned.lastTargetId = [...owned.tabIds].at(-1) ?? null;
+    if (owned.tabIds.size === 0) state.browserTabSessions.delete(session);
+  }
+}
+
+function enqueueTabCreation(owned, fn) {
+  const run = owned.tail.then(fn, fn);
+  owned.tail = run.catch(() => {});
+  return run;
 }
 
 async function detachIfUnused(tabId) {
@@ -112,35 +170,73 @@ async function detachIfUnused(tabId) {
 async function routeBrowserLevel(method, params, client) {
   switch (method) {
     case "Target.getTargets":
-      return { targetInfos: await listTargetInfos() };
+      return { targetInfos: await listTargetInfos(client) };
     case "Target.getTargetInfo": {
       const tabId = Number(String(params.targetId).replace(/^awb-/, ""));
+      requireOwnedTab(client, tabId);
       const tab = await extTabOp("get", { tabId });
       return { targetInfo: targetInfo(tab) };
     }
     case "Target.createTarget": {
       const url = params && params.url ? params.url : "about:blank";
-      const tab = await extTabOp("create", { url, active: true });
-      return { targetId: targetIdFor(tab.id) };
+      const scope = browserScopes.get(client);
+      if (!scope) {
+        const tab = await extTabOp("create", { url, active: params.background !== true });
+        return { targetId: targetIdFor(tab.id) };
+      }
+      const owned = ownedTabSession(client, true);
+      const bootstrapTabId = browserBootstrapTargets.get(client);
+      if (
+        bootstrapTabId
+        && owned.tabIds.has(bootstrapTabId)
+        && ![...state.sessions.values()].some((session) => session.client === client)
+      ) {
+        browserBootstrapTargets.delete(client);
+        return { targetId: targetIdFor(bootstrapTabId) };
+      }
+      return enqueueTabCreation(owned, async () => {
+        const tab = await extTabOp("create", { url, active: params.background !== true });
+        try {
+          const grouped = await extTabOp("group", {
+            tabId: tab.id,
+            groupId: owned.groupId,
+            title: owned.title,
+          });
+          owned.groupId = grouped.groupId;
+          owned.tabIds.add(tab.id);
+          return { targetId: targetIdFor(tab.id) };
+        } catch (error) {
+          await extTabOp("remove", { tabId: tab.id }).catch(() => {});
+          if (owned.tabIds.size === 0) state.browserTabSessions.delete(scope.session);
+          throw error;
+        }
+      });
     }
     case "Target.attachToTarget": {
       const tabId = Number(String(params.targetId).replace(/^awb-/, ""));
       if (!tabId) throw new Error("attachToTarget: bad targetId " + params.targetId);
+      requireOwnedTab(client, tabId);
       const sessionId = "awbs" + nextId();
       state.sessions.set(sessionId, { tabId, client });
+      const owned = ownedTabSession(client);
+      if (owned) owned.lastTargetId = tabId;
+      browserBootstrapTargets.delete(client);
       return { sessionId };
     }
     case "Target.activateTarget": {
       const tabId = Number(String(params.targetId).replace(/^awb-/, ""));
+      requireOwnedTab(client, tabId);
       await extTabOp("activate", { tabId });
       return {};
     }
     case "Target.closeTarget": {
       const tabId = Number(String(params.targetId).replace(/^awb-/, ""));
+      requireOwnedTab(client, tabId);
       await extTabOp("remove", { tabId });
       for (const [sid, session] of state.sessions) if (session.tabId === tabId) state.sessions.delete(sid);
       state.downloadPolicies.delete(tabId);
       state.tabTargets.delete(tabId);
+      forgetTab(tabId);
       return { success: true };
     }
     case "Target.detachFromTarget": {
@@ -219,6 +315,8 @@ const clientCleanup = new WeakMap();
 async function performClientCleanup(client) {
   unregisterBrowserClient(client);
   browserInflight.delete(client);
+  browserScopes.delete(client);
+  browserBootstrapTargets.delete(client);
   state.clients.delete(client);
   const tabs = new Set();
   for (const [sid, session] of state.sessions) {
@@ -260,12 +358,13 @@ export async function shutdownBrowserClients() {
   await Promise.all([...leftoverTabs].map((tabId) => extDetach(tabId)));
 }
 
-export function handleBrowser(ws) {
+export function handleBrowser(ws, scope = null) {
   if (state.clients.size >= MAX_BROWSER_CLIENTS) {
     try { ws.close(1013, "too many browser clients"); } catch {}
     return;
   }
   state.clients.add(ws);
+  if (scope) browserScopes.set(ws, scope);
   registerBrowserClient(ws, () => { void cleanupClient(ws); });
   ws.on("message", async (data) => {
     if (!state.clients.has(ws)) return;

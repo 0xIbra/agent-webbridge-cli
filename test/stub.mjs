@@ -24,6 +24,7 @@ ws.on("message", (d) => {
   let m;
   try { m = JSON.parse(d); } catch { return; }
   if (m.type === "tabop") {
+    if (process.env.STUB_TABOP_FILE) fs.appendFileSync(process.env.STUB_TABOP_FILE, `${JSON.stringify(m)}\n`);
     if (m.op === "list") return ws.send(JSON.stringify({ type: "res", id: m.id, result: tabs }));
     if (m.op === "get") {
       const t = tabs.find((x) => x.id === m.params.tabId);
@@ -40,6 +41,12 @@ ws.on("message", (d) => {
       return ws.send(JSON.stringify({ type: "res", id: m.id, result: {} }));
     }
     if (m.op === "activate") return ws.send(JSON.stringify({ type: "res", id: m.id, result: {} }));
+    if (m.op === "group") {
+      const t = tabs.find((x) => x.id === m.params.tabId);
+      if (!t) return ws.send(JSON.stringify({ type: "res", id: m.id, error: { code: -32000, message: "no tab " + m.params.tabId } }));
+      t.groupId = Number.isInteger(m.params.groupId) ? m.params.groupId : (100 + t.id);
+      return ws.send(JSON.stringify({ type: "res", id: m.id, result: { groupId: t.groupId } }));
+    }
     return ws.send(JSON.stringify({ type: "res", id: m.id, result: {} }));
   }
   if (m.type === "setDownloadBehavior") {

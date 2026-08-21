@@ -40,6 +40,17 @@ function rejectUpgrade(socket) {
   socket.destroy();
 }
 
+function browserScope(url) {
+  const rawSession = url.searchParams.get("session");
+  if (rawSession === null) return null;
+  const session = rawSession.trim();
+  const rawTitle = url.searchParams.get("group_title");
+  const groupTitle = rawTitle === null ? session.slice(0, 80) : rawTitle.trim();
+  const invalid = (value, max) => !value || value.length > max || /[\u0000-\u001f\u007f]/.test(value);
+  if (invalid(session, 128) || invalid(groupTitle, 80)) throw new Error("invalid browser session scope");
+  return { session, groupTitle };
+}
+
 const server = http.createServer((req, res) => {
   const send = (code, obj) => {
     res.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -85,7 +96,9 @@ server.on("upgrade", (req, socket, head) => {
   }
   if (u.pathname.startsWith("/devtools/browser/")) {
     if (CONTROL_TOKEN && !secretMatches(u.searchParams.get("token"), CONTROL_TOKEN)) return rejectUpgrade(socket);
-    return wss.handleUpgrade(req, socket, head, (ws) => handleBrowser(ws));
+    let scope;
+    try { scope = browserScope(u); } catch { return rejectUpgrade(socket); }
+    return wss.handleUpgrade(req, socket, head, (ws) => handleBrowser(ws, scope));
   }
   socket.destroy();
 });

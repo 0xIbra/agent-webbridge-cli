@@ -86,6 +86,26 @@ async function ensureAttach(tabId) {
   attached.set(tabId, true);
 }
 
+async function groupTab({ tabId, groupId, title }) {
+  let resolvedGroupId = Number.isInteger(groupId) ? groupId : null;
+  if (resolvedGroupId !== null) {
+    try {
+      await chrome.tabs.group({ groupId: resolvedGroupId, tabIds: [tabId] });
+    } catch {
+      resolvedGroupId = null;
+    }
+  }
+  if (resolvedGroupId === null) {
+    const tab = await chrome.tabs.get(tabId);
+    resolvedGroupId = await chrome.tabs.group({
+      createProperties: { windowId: tab.windowId },
+      tabIds: [tabId],
+    });
+  }
+  await chrome.tabGroups.update(resolvedGroupId, { title });
+  return { groupId: resolvedGroupId };
+}
+
 async function handle(m) {
   if (m.type === "cmd") {
     const { id, tabId, method, params } = m;
@@ -105,6 +125,7 @@ async function handle(m) {
       else if (op === "activate") result = await chrome.tabs.update(params.tabId, { active: true });
       else if (op === "list") result = await chrome.tabs.query(params || {});
       else if (op === "get") result = await chrome.tabs.get(params.tabId);
+      else if (op === "group") result = await groupTab(params || {});
       else throw new Error("unknown tabop " + op);
       post({ type: "res", id, result });
     } catch (e) {

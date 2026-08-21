@@ -9,6 +9,7 @@ export const state = {
   extWaiters: [],       // resolvers waiting for the extension to (re)connect
   sessions: new Map(),  // sessionId -> { tabId, client } (flatten attach sessions)
   tabTargets: new Map(),// tabId -> targetId
+  browserTabSessions: new Map(), // browser session name -> { groupId, title, tabIds, lastTargetId, tail }
   perTabQueues: new Map(), // tabId -> { tail, depth } (serialize bounded CDP work)
   downloadPolicies: new Map(), // tabId -> { client, destination }
   downloadTransfers: new Map(), // guid -> { tabId, filename, client, destination }

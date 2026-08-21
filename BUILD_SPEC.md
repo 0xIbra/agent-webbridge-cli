@@ -7,7 +7,7 @@ the change is wrong or this file needs an explicit amendment.
 
 ```
 browser-harness (Browser Use CLI 3.0)     the agent's script runner
-        │  BU_CDP_WS=ws://127.0.0.1:9377/devtools/browser/awb[?token=capability]
+        │  BU_CDP_WS=ws://127.0.0.1:9377/devtools/browser/awb[?token=...&session=...&group_title=...]
         ▼
 daemon (src/daemon, Node, one dep: ws)    CDP emulation + session routing
         │  WS /ext  (ext <- daemon)
@@ -31,7 +31,8 @@ HTTP:
 Browser-level WS (no sessionId), Target.* emulation:
 - `Target.getTargets` → targetInfos[] with `{targetId, type:"page", title, url, attached}`
 - `Target.getTargetInfo {targetId}`
-- `Target.createTarget {url}` → `{targetId}` (chrome.tabs.create)
+- `Target.createTarget {url, background?}` → `{targetId}` (chrome.tabs.create,
+  honoring background; scoped clients also group and retain ownership)
 - `Target.attachToTarget {targetId, flatten:true}` → `{sessionId}`
 - `Target.activateTarget {targetId}` (chrome.tabs.update active)
 - `Target.closeTarget {targetId}` (chrome.tabs.remove)
@@ -58,7 +59,7 @@ ext -> daemon: {type:"hello", extensionVersion, runtimeId}
                {type:"evt", tabId, method, params}
                {type:"ping"}                          // heartbeat, ignored by daemon
 daemon -> ext: {type:"cmd", id, tabId, method, params}
-               {type:"tabop", id, op, params}         // create|remove|activate|list|get
+               {type:"tabop", id, op, params}         // create|remove|activate|list|get|group
                {type:"detach", tabId}
                {type:"setDownloadBehavior", id, tabId, behavior}
 ```
@@ -107,6 +108,15 @@ daemon -> ext: {type:"cmd", id, tabId, method, params}
 - Browser-client responses and events have a 1 MiB cumulative WebSocket send
   budget. A frame that would exceed it closes the slow consumer instead of
   growing the transport queue.
+- A browser WebSocket with `session` and `group_title` query parameters is
+  scoped to that logical task. Its `Target.getTargets` returns only targets the
+  task created, new targets join one titled Chrome tab group, and target-level
+  commands fail closed for tabs owned by another task. A reconnecting named
+  Harness daemon gets its last attached target back when its startup path asks
+  to create a replacement. Explicit `new_tab()` calls after startup still create
+  distinct targets. Ownership survives Browser Harness daemon reconnects for
+  the lifetime of the Agent WebBridge daemon. Unscoped clients retain the
+  existing all-tabs behavior. Session state is capped at 128 entries.
 - Attach happens lazily on the first command to a tab. Flatten sessions are
   owned by the Browser Harness WebSocket that created them. Closing that socket
   deletes its sessions and sends `detach` for each tab no remaining client uses;
